@@ -40,7 +40,7 @@ class Model(nn.Module):
         optimizer = torch.optim.Adam(self.parameters(), lr=1e-3)
         self.train()
         for _ in range(200):
-            output = self.forward(x)
+            output = self(x)
             lossfunc = nn.CrossEntropyLoss()
             loss = lossfunc(output, y)
             self.zero_grad()
