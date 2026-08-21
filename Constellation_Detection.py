@@ -14,11 +14,15 @@ from PIL import Image
 import os
 
 
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+print("Using:", device)
+if torch.cuda.is_available():
+    print("GPU:", torch.cuda.get_device_name(0))
 
 images = os.listdir(r"C:\Users\ronan\Desktop\AI\TestingConst.v1i.yolo26\train\images")
 labels = os.listdir(r"C:\Users\ronan\Desktop\AI\TestingConst.v1i.yolo26\train\labels")
-print(images)
-print(labels)
+
 to_tensor = transforms.ToTensor()
 
 class Stargazer(nn.Module):
@@ -71,11 +75,11 @@ class Stargazer(nn.Module):
                 with open(labels_path, "r") as file:
                     for line in file:
                         label.append(torch.tensor([float(x) for x in line.split()]))
-                label = torch.stack(label)
+                label = torch.stack(label).to(device)
 
 
-                x = to_tensor(opened_image)
-                object = torch.zeros((3,3))
+                x = to_tensor(opened_image).to(device)
+                object = torch.zeros((3,3), device=device)
                 for l in label:
                     x_box = l[1]
                     y_box = l[2]
@@ -83,8 +87,10 @@ class Stargazer(nn.Module):
 
                 object = object.reshape(9)
                 lossObjectness, lossBox, lossID = 0, 0, 0
-
+                self.optim.zero_grad()
+                prediction = self.forward(x)  # (9, 21)
                 index2 = 0
+
                 # objectness
                 for _ in range(9):
                     lossObjectness = lossObjectness + nn.BCEWithLogitsLoss()(prediction[index2][0], object[
@@ -93,8 +99,7 @@ class Stargazer(nn.Module):
 
                 index2 = 0
                 for l in label:
-                    prediction = self.forward(x) #(9, 21)
-                    self.optim.zero_grad()
+
 
 
 
@@ -148,7 +153,7 @@ class Stargazer(nn.Module):
                 )
 
                 opened_image = Image.open(image_path).convert("RGB")
-                x = to_tensor(opened_image)
+                x = to_tensor(opened_image).to(device)
 
                 prediction = self.forward(x)  # (9, 21)
 
@@ -199,7 +204,10 @@ class Stargazer(nn.Module):
                         if count == 10:
                             return
 
-model = Stargazer()
+
+
+
+model = Stargazer().to(device)
 
 model.train_stargazer(epochs=1)
 model.test_stargazer()
