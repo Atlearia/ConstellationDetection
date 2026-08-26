@@ -14,6 +14,14 @@ import random
 #images --> 640x640
 import os
 
+from ultralytics import YOLO
+
+CLASS_NAMES = {
+    0: "Aquila", 1: "Bootes", 2: "Canis Major", 3: "Canis Minor",
+    4: "Cassiopeia", 5: "Cygnus", 6: "Gemini", 7: "Leo",
+    8: "Lyra", 9: "Moon", 10: "Orion", 11: "Pleiades",
+    12: "Sagittarius", 13: "Scorpius", 14: "Taurus", 15: "Ursa Major",
+}
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -46,8 +54,8 @@ class Stargazer(nn.Module):
         super().__init__()
 
         self.layer1 = nn.Sequential(
-            nn.Conv2d(3, 16, 3, stride=2, padding=1), nn.ReLU(),  # 320
-            nn.Conv2d(16, 32, 3, stride=2, padding=1), nn.ReLU(),  # 160
+            nn.Conv2d(3, 16, 3, stride=2, padding=1), nn.ReLU(),  # (16, 320, 320)
+            nn.Conv2d(16, 32, 3, stride=2, padding=1), nn.ReLU(),  # (32, 160, 160)
             nn.Conv2d(32, 64, 3, stride=2, padding=1), nn.ReLU(),  # 80
             nn.Conv2d(64, 64, 3, stride=2, padding=1), nn.ReLU(),  # 40
             nn.Conv2d(64, 128, 3, stride=2, padding=1), nn.ReLU(),  # 20
@@ -74,8 +82,9 @@ class Stargazer(nn.Module):
 # 5-21 is ID
 
 
-    def train_stargazer(self, epochs: int=15):
+    def train_stargazer(self, epochs: int=10):
         self.train()
+        best_val_loss = 99999
 
         for epoch in range(epochs):
             total_train_loss = 0
@@ -109,7 +118,7 @@ class Stargazer(nn.Module):
                     cell_loss = nn.BCEWithLogitsLoss()(prediction[index2][0], object[index2])  # 0 is non object, 1 is object
 
                     if object[index2] == 0:
-                        cell_loss = cell_loss * 0.1  # empty cells less weight
+                        cell_loss = cell_loss * 0.5  # empty cells less weight
                     lossObjectness = lossObjectness + cell_loss
                     index2 = index2 + 1
                 index2 = 0
@@ -145,6 +154,9 @@ class Stargazer(nn.Module):
             avg_train_loss = total_train_loss/len(train_indices)
             avg_val_loss = self.validate_stargazer()
             print(f"epoch {epoch + 1}/{epochs}, train_loss={avg_train_loss:.4f}, val_loss={avg_val_loss:.4f}")
+            if avg_val_loss < best_val_loss:
+                best_val_loss = avg_val_loss
+                torch.save(model.state_dict(), "best_model.pth")
 
     # AI slop
     def validate_stargazer(self):
@@ -180,7 +192,7 @@ class Stargazer(nn.Module):
                     cell_loss = nn.BCEWithLogitsLoss()(prediction[index2][0], object[index2])
 
                     if object[index2] == 0:
-                        cell_loss = cell_loss * 0.1
+                        cell_loss = cell_loss * 0.5
                     lossObjectness = lossObjectness + cell_loss
                     index2 = index2 + 1
                 index2 = 0
@@ -206,14 +218,18 @@ class Stargazer(nn.Module):
 
                 loss = lossObjectness / 36 + lossBox / len(label) + lossID / len(label)
                 total_val_loss = total_val_loss + loss.item()
-
+                print(
+                    "obj:", (lossObjectness / 36).item(),
+                    "box:", (lossBox / len(label)).item(),
+                    "class:", (lossID / len(label)).item()
+                )
         self.train()
         return total_val_loss / len(val_indices)
 
-    def test_stargazer(self, objectness_threshold: float = 0.5):
+    def test_stargazer(self, objectness_threshold: float = 0.45):
         import matplotlib.pyplot as plt
         from PIL import ImageDraw
-
+        self.load_state_dict(torch.load("best_model.pth", map_location=device))
         self.eval()
 
         current_index = 0
@@ -376,11 +392,105 @@ class Stargazer(nn.Module):
 
         plt.show()
 
+    def test_ultralytics_folder(self, folder_path, weights_path, confidence_threshold: float = 0.01):
+        from ultralytics import YOLO
+        import matplotlib.pyplot as plt
+        from PIL import ImageDraw, ImageFont
+
+        yolo_model = YOLO(weights_path)
+
+        valid_ext = (".jpg", ".jpeg", ".png", ".bmp", ".webp")
+        folder_images = sorted(
+            f for f in os.listdir(folder_path)
+            if f.lower().endswith(valid_ext)
+        )
+
+        if not folder_images:
+            print(f"No images found in {folder_path}")
+            return
+
+        current_index = 0
+
+        fig, axes = plt.subplots(1, 2, figsize=(14, 7))
+
+        def show_image(position):
+            axes[0].clear()
+            axes[1].clear()
+
+            image_name = folder_images[position]
+            image_path = os.path.join(folder_path, image_name)
+
+            opened_image = Image.open(image_path).convert("RGB")
+            original_image = opened_image.copy()
+            predicted_image = opened_image.copy()
+            predicted_draw = ImageDraw.Draw(predicted_image)
+
+            font = ImageFont.truetype("arial.ttf", 32)
+            results = yolo_model.predict(source=opened_image, conf=confidence_threshold, verbose=False)
+            result = results[0]
+
+            for box in result.boxes:
+                x1, y1, x2, y2 = box.xyxy[0].cpu().tolist()
+                pred_confidence = box.conf[0].item()
+                pred_class = int(box.cls[0].item())
+
+                print("image:", image_name, "box:", [x1, y1, x2, y2], "confidence:", pred_confidence, "class:",
+                      pred_class)
+
+                predicted_draw.rectangle([x1, y1, x2, y2], outline="blue", width=3)
+                predicted_draw.text(
+                    (x1, y1),
+                    f"{CLASS_NAMES.get(pred_class, pred_class)} ({pred_confidence:.2f})",
+                    fill="red",
+                    font=font
+                )
+
+            axes[0].imshow(original_image)
+            axes[0].set_title("ORIGINAL")
+            axes[0].axis("off")
+
+            axes[1].imshow(predicted_image)
+            axes[1].set_title("ULTRALYTICS YOLO")
+            axes[1].axis("off")
+
+            fig.suptitle(f"{position + 1}/{len(folder_images)} - {image_name}")
+            fig.canvas.draw_idle()
+
+        def key_pressed(event):
+            nonlocal current_index
+            if event.key == "right":
+                current_index = (current_index + 1) % len(folder_images)
+                show_image(current_index)
+            elif event.key == "left":
+                current_index = (current_index - 1) % len(folder_images)
+                show_image(current_index)
+
+        fig.canvas.mpl_connect("key_press_event", key_pressed)
+        show_image(current_index)
+        plt.show()
+
+
+def train_ultralytics():
+    model = YOLO("yolo26n.pt")
+
+    model.train(
+        data=r"C:\Users\ronan\Desktop\AI\TestingConst.v1i.yolo26\data.yaml",
+        epochs=20,
+        imgsz=640,
+        device=0,
+        amp = False,
+        workers = 0
+    )
+    return model.trainer.best
 
 
 
-model = Stargazer().to(device)
-
-model.train_stargazer(epochs=20)
-model.test_stargazer()
-torch.save(model.state_dict(), "stargazer.pth")
+# model.train_stargazer(epochs=20)
+if __name__ == "__main__":
+    model = Stargazer().to(device)
+    weights_path = r"C:\Users\ronan\Desktop\AI\runs\detect\train-13\weights\best.pt"
+    #model.test_ultralytics(weights_path=weights_path)
+    model.test_ultralytics_folder(
+        folder_path=r"C:\Users\ronan\Desktop\AI\lol",
+        weights_path=weights_path
+    )
